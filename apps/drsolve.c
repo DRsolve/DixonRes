@@ -75,6 +75,7 @@ static void print_short_usage(const char *prog_name)
     printf("  --field-equation  After each multiplication, reduces x^q -> x for every variable\n");
     printf("  --ideal <args>    After each multiplication, reduces using the given substitution\n");
     printf("  --complex         Output complex solutions (2x2 solver or complex roots over Q)\n");
+    printf("  --rank-pred       Enable experimental rank-predicted complexity (may be expensive)\n");
     printf("  --max-primes <n>  Maximum primes for rational reconstruction (Q default: 64; large-prime fallback: 256)\n");
     printf("  --test <n>        Run built-in tests (1: Dixon matrix size, 2: Bezout bound, 3: solver correctness, 4: performance)\n");
     printf("  --time            Print per-step timing information\n");
@@ -158,6 +159,7 @@ void drsolve_cli_print_usage(const char *prog_name)
            DEFAULT_OUTPUT_DIR);
     printf("    Add --omega <value> (or -w <value>) to set omega (default: %.4g)\n",
            DIXON_OMEGA);
+    printf("    Add --rank-pred to enable the experimental rank prediction model; it is skipped by default\n");
     printf("    Add --time to print per-step timing; use -v 2 for the old debug-level diagnostics\n");
     printf("\n");
 
@@ -317,6 +319,8 @@ static int validate_cli_options(int argc, char *argv[])
         {"solve", no_argument, NULL, 's'},
         {"comp", no_argument, NULL, 'c'},
         {"complexity", no_argument, NULL, 'c'},
+        {"rank-pred", no_argument, NULL, OPT_FLAG},
+        {"rank-prediction", no_argument, NULL, OPT_FLAG},
         {"random", no_argument, NULL, 'r'},
         {"homogeneous", no_argument, NULL, OPT_FLAG},
         {"hom", no_argument, NULL, OPT_FLAG},

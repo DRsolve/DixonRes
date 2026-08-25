@@ -119,6 +119,7 @@ typedef struct {
     double step4_sparse_term_bound_log2;
     double step4_sparse_slp_length_log2;
     int step4_rank_model_applicable;
+    int rank_prediction_enabled;
     slong step4_rank_size;
     double step4_rank_size_log2;
     double step4_rank_hnf_log2;
@@ -165,7 +166,8 @@ void run_complexity_analysis(const char *polys_str,
                              const char *output_filename,
                              int silent_mode,
                              double comp_time,
-                             double omega);
+                             double omega,
+                             int rank_prediction);
 
 void run_complexity_analysis_from_degrees(const long *degrees,
                                           slong num_polys,
@@ -178,7 +180,8 @@ void run_complexity_analysis_from_degrees(const long *degrees,
                                           int silent_mode,
                                           double comp_time,
                                           double omega,
-                                          const char *system_spec);
+                                          const char *system_spec,
+                                          int rank_prediction);
 
 void dixon_complexity_report_from_degrees(dixon_complexity_report_t *report,
                                           const long *degrees,
@@ -188,7 +191,8 @@ void dixon_complexity_report_from_degrees(dixon_complexity_report_t *report,
                                           slong num_parameter_vars,
                                           const fmpz_t field_characteristic,
                                           const fmpz_t field_order,
-                                          double omega);
+                                          double omega,
+                                          int rank_prediction);
 
 int dixon_rank_profile_from_degrees(slong **strata_out, slong *strata_len_out,
                                     slong **hilbert_out, slong *hilbert_len_out,

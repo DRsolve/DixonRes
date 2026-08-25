@@ -2872,6 +2872,7 @@ int drsolve_cli_main(int argc, char *argv[], const char *prog_name)
     int    field_eq_final_only_mode = 0; /* --field-equation-s */
     int    time_mode   = 0;   /* --time */
     double omega       = DIXON_OMEGA;   /* default, overridden by --omega */
+    int rank_prediction = 0; /* opt-in: expensive experimental rank model */
     int    det_method_step1 = -1;  /* determinant method override for step 1 */
     int    det_method_step4 = -1;  /* determinant method override for step 4 */
     int    num_threads = -1;  /* number of threads, -1 means use default */
@@ -2944,6 +2945,9 @@ int drsolve_cli_main(int argc, char *argv[], const char *prog_name)
         } else if (strcmp(argv[i], "--random") == 0 ||
                    strcmp(argv[i], "-r")       == 0) {
             rand_mode = 1;
+        } else if (strcmp(argv[i], "--rank-pred") == 0 ||
+                   strcmp(argv[i], "--rank-prediction") == 0) {
+            rank_prediction = 1;
         } else if (strcmp(argv[i], "--homogeneous") == 0 ||
                    strcmp(argv[i], "--hom") == 0) {
             random_homogeneous = 1;
@@ -4065,12 +4069,14 @@ int drsolve_cli_main(int argc, char *argv[], const char *prog_name)
                                                  ctx_initialized ? ctx : NULL,
                                                  output_filename, silent_mode,
                                                  comp_time, omega,
-                                                 rand_comp_spec);
+                                                 rand_comp_spec,
+                                                 rank_prediction);
         } else {
             run_complexity_analysis(polys_str, vars_str,
                                     p_fmpz, power, ctx_initialized ? ctx : NULL,
                                     output_filename, silent_mode,
-                                    comp_time, omega);
+                                    comp_time, omega,
+                                    rank_prediction);
         }
 
     } else if (solve_mode) {

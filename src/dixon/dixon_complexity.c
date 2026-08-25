@@ -1301,7 +1301,8 @@ void dixon_complexity_report_from_degrees(dixon_complexity_report_t *report,
                                           slong num_parameter_vars,
                                           const fmpz_t field_characteristic,
                                           const fmpz_t field_order,
-                                          double omega) {
+                                          double omega,
+                                          int rank_prediction) {
     memset(report, 0, sizeof(*report));
 
     fmpz_t matrix_size;
@@ -1828,7 +1829,8 @@ void dixon_complexity_report_from_degrees(dixon_complexity_report_t *report,
         report->step3_rank_extraction_log2 = log2_M_la;
         report->step4_ordinary_probe_cost_log2 = log2_M_la;
         report->step4_sparse_slp_length_log2 = log2_M_la;
-        report->step4_rank_model_applicable = 0;
+    report->step4_rank_model_applicable = 0;
+        report->rank_prediction_enabled = rank_prediction ? 1 : 0;
         report->step4_rank_size = 0;
         report->step4_rank_size_log2 = 0.0;
         report->step4_rank_hnf_log2 = INFINITY;
@@ -1902,7 +1904,7 @@ void dixon_complexity_report_from_degrees(dixon_complexity_report_t *report,
             report->step4_sparse_log2 = step4_sparse_log2;
         }
 
-        if (uniform_positive_degree(degrees, num_polys, &uniform_d) &&
+        if (rank_prediction && uniform_positive_degree(degrees, num_polys, &uniform_d) &&
             dixon_rank_model_uniform(rank_size, num_polys, num_elim_vars, uniform_d)) {
             double rank_log2 = log2_fmpz_upper_bound(rank_size);
 
@@ -1921,7 +1923,7 @@ void dixon_complexity_report_from_degrees(dixon_complexity_report_t *report,
             report->step4_rank_hnf_log2 =
                 ((rank_log2 > 0.0) ? omega * rank_log2 : 0.0) +
                 report->step4_rank_hnf_degree_density_log2;
-        } else if (dixon_rank_model_mixed(rank_size, degrees,
+        } else if (rank_prediction && dixon_rank_model_mixed(rank_size, degrees,
                                           num_polys, num_elim_vars)) {
             double rank_log2 = log2_fmpz_upper_bound(rank_size);
 
@@ -2624,8 +2626,10 @@ static void dixon_complexity_write_report_body(
             fprintf(fp, " (log2: %.6f)\n", report->step4_rank_size_log2);
             fprintf(fp, "Step 4 rank-predicted HNF estimate (heuristic/conjectural, log2): %.6f\n",
                     report->step4_rank_hnf_log2);
-        } else {
+        } else if (report->rank_prediction_enabled) {
             fprintf(fp, "Step 4 rank prediction: unavailable (requires #polys = #elim + 1 and positive degrees)\n");
+        } else {
+            fprintf(fp, "Step 4 rank prediction: disabled (use --rank-pred to enable)\n");
         }
         fprintf(fp, "Step 4 ordinary dense interpolation (log2): %.6f\n",
                 report->step4_ordinary_interp_log2);
@@ -2864,7 +2868,8 @@ void run_complexity_analysis(
         const char      *output_filename,
         int              silent_mode,
         double           comp_time,
-        double           omega) {
+        double           omega,
+        int              rank_prediction) {
     slong num_polys = 0;
     slong num_elim = 0;
     char **poly_arr = split_string(polys_str, &num_polys);
@@ -2938,7 +2943,8 @@ void run_complexity_analysis(
                                          num_parameter_vars,
                                          field_characteristic,
                                          field_order,
-                                         omega);
+                                         omega,
+                                         rank_prediction);
 
     if (!silent_mode) {
         printf("\n=== Complexity Analysis ===\n");
@@ -3013,7 +3019,8 @@ void run_complexity_analysis_from_degrees(
         int              silent_mode,
         double           comp_time,
         double           omega,
-        const char      *system_spec) {
+        const char      *system_spec,
+        int              rank_prediction) {
     char **all_vars = NULL;
     char **elim_arr = NULL;
     char *elim_str = NULL;
@@ -3103,7 +3110,8 @@ void run_complexity_analysis_from_degrees(
                                          num_parameter_vars,
                                          field_characteristic,
                                          field_order,
-                                         omega);
+                                         omega,
+                                         rank_prediction);
 
     if (!silent_mode) {
         printf("\n=== Complexity Analysis ===\n");
@@ -3669,7 +3677,8 @@ char* dixon_complexity_auto(const char **poly_strings, slong num_polys,
                                          num_remaining,
                                          field_characteristic,
                                          field_order,
-                                         DIXON_OMEGA);
+                                         DIXON_OMEGA,
+                                         0);
     
     fmpz_t matrix_size;
     fmpz_init(matrix_size);
