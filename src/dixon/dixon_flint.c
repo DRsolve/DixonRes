@@ -290,32 +290,6 @@ static ulong hash_monom_exponents(const slong *exp, slong nvars)
     return hash;
 }
 
-static hash_entry_t **build_monom_index(monom_t *monoms,
-                                        slong nmonoms,
-                                        slong nvars,
-                                        slong *hash_size_out)
-{
-    slong hash_size = 16;
-    hash_entry_t **buckets;
-
-    while (hash_size < 2 * FLINT_MAX(1, nmonoms)) {
-        hash_size <<= 1;
-    }
-
-    buckets = (hash_entry_t **) flint_calloc((size_t) hash_size, sizeof(hash_entry_t *));
-    for (slong i = 0; i < nmonoms; i++) {
-        ulong hash = hash_monom_exponents(monoms[i].exp, nvars) & (ulong) (hash_size - 1);
-        hash_entry_t *entry = (hash_entry_t *) flint_malloc(sizeof(hash_entry_t));
-        entry->exp = monoms[i].exp;
-        entry->idx = monoms[i].idx;
-        entry->next = buckets[hash];
-        buckets[hash] = entry;
-    }
-
-    *hash_size_out = hash_size;
-    return buckets;
-}
-
 static void free_monom_index(hash_entry_t **buckets, slong hash_size)
 {
     if (buckets == NULL) {
@@ -3785,171 +3759,110 @@ void find_fq_optimal_maximal_rank_submatrix(fq_mvpoly_t ***full_matrix,
     }
 }
 
-// Optimized monomial collection function - replaces the original O(n²) loop
+/* Assign IDs in first-occurrence order. Only unique supports consume storage;
+ * exponent pointers are borrowed until collection is complete. */
+static slong dixon_intern_monom(monom_t **monoms, slong *count, slong *capacity,
+                                hash_entry_t ***index, slong *hash_size,
+                                const slong *exp, slong nvars)
+{
+    ulong hash = hash_monom_exponents(exp, nvars);
+    slong bucket = hash & (*hash_size - 1);
+    for (hash_entry_t *e = (*index)[bucket]; e; e = e->next)
+        if (memcmp(e->exp, exp, (size_t) nvars * sizeof(slong)) == 0)
+            return e->idx;
+
+    if (*count >= *hash_size / 2) {
+        slong new_size = *hash_size * 2;
+        hash_entry_t **grown = flint_calloc((size_t) new_size, sizeof(*grown));
+        for (slong i = 0; i < *hash_size; i++) {
+            hash_entry_t *e = (*index)[i];
+            while (e) {
+                hash_entry_t *next = e->next;
+                slong h = hash_monom_exponents(e->exp, nvars) & (new_size - 1);
+                e->next = grown[h];
+                grown[h] = e;
+                e = next;
+            }
+        }
+        flint_free(*index);
+        *index = grown;
+        *hash_size = new_size;
+        bucket = hash & (new_size - 1);
+    }
+    if (*count == *capacity) {
+        *capacity = *capacity ? 2 * *capacity : 16;
+        *monoms = flint_realloc(*monoms, (size_t) *capacity * sizeof(**monoms));
+    }
+    slong id = (*count)++;
+    (*monoms)[id].exp = (slong *) exp;
+    (*monoms)[id].idx = id;
+    hash_entry_t *e = flint_malloc(sizeof(*e));
+    e->exp = (slong *) exp;
+    e->idx = id;
+    e->next = (*index)[bucket];
+    (*index)[bucket] = e;
+    return id;
+}
+
+/* Keep the existing single-free ownership convention for returned monomials.
+ * Rebind the retained hash nodes to this compact, owned exponent storage. */
+static void dixon_pack_monoms(monom_t **monoms, slong count, slong nvars,
+                              hash_entry_t **index, slong hash_size)
+{
+    if (count == 0) {
+        flint_free(*monoms);
+        *monoms = NULL;
+        return;
+    }
+    monom_t *packed = flint_malloc((size_t) count *
+                                  (sizeof(monom_t) + (size_t) nvars * sizeof(slong)));
+    slong *exps = (slong *) (packed + count);
+    for (slong i = 0; i < count; i++) {
+        packed[i].idx = i;
+        packed[i].exp = exps + i * nvars;
+        memcpy(packed[i].exp, (*monoms)[i].exp, (size_t) nvars * sizeof(slong));
+    }
+    for (slong i = 0; i < hash_size; i++)
+        for (hash_entry_t *e = index[i]; e; e = e->next)
+            e->exp = packed[e->idx].exp;
+    flint_free(*monoms);
+    *monoms = packed;
+}
+
 static void collect_unique_monomials(
     monom_t **x_monoms_out, slong *nx_monoms_out,
     monom_t **dual_monoms_out, slong *ndual_monoms_out,
-    const fq_mvpoly_t *dixon_poly, 
-    const slong *d0, const slong *d1, slong nvars) {
-    
-    if (dixon_poly->nterms == 0) {
-        *x_monoms_out = NULL; *nx_monoms_out = 0;
-        *dual_monoms_out = NULL; *ndual_monoms_out = 0;
-        return;
-    }
-    
-    /* Simple hash table size - power of 2 for fast modulo */
-    slong hash_size = 1024;
-    while (hash_size < dixon_poly->nterms) hash_size <<= 1;
-    
-    /* Hash tables for tracking unique monomials */
-    hash_entry_t **x_buckets = (hash_entry_t**) flint_calloc(hash_size, sizeof(hash_entry_t*));
-    hash_entry_t **dual_buckets = (hash_entry_t**) flint_calloc(hash_size, sizeof(hash_entry_t*));
-    
-    /* * COALESCED ALLOCATION STRATEGY:
-     * We allocate a single block for both the monom_t array and the exponent data.
-     * This ensures that when the caller frees the returned pointer, all associated 
-     * memory is released without needing extra arguments.
-     */
-    slong max_terms = dixon_poly->nterms;
-    
-    /* Calculate sizes for X-monomials */
-    slong x_structs_size = max_terms * sizeof(monom_t);
-    slong x_data_size = max_terms * nvars * sizeof(slong);
-    char *x_combined = (char *) flint_malloc(x_structs_size + x_data_size);
-    
-    monom_t *x_monoms = (monom_t *) x_combined;
-    slong *x_exp_storage = (slong *) (x_combined + x_structs_size);
-    
-    /* Calculate sizes for Dual-monomials */
-    slong dual_structs_size = max_terms * sizeof(monom_t);
-    slong dual_data_size = max_terms * nvars * sizeof(slong);
-    char *dual_combined = (char *) flint_malloc(dual_structs_size + dual_data_size);
-    
-    monom_t *dual_monoms = (monom_t *) dual_combined;
-    slong *dual_exp_storage = (slong *) (dual_combined + dual_structs_size);
-
-    slong nx_monoms = 0, ndual_monoms = 0;
-    
-    /* Process each term in the Dixon polynomial */
-    for (slong i = 0; i < dixon_poly->nterms; i++) {
-        const slong *var_exp = dixon_poly->terms[i].var_exp;
-        if (!var_exp) continue;
-        
-        /* Check degree bounds d0 and d1 */
+    hash_entry_t ***x_index, slong *x_hash_size,
+    hash_entry_t ***dual_index, slong *dual_hash_size,
+    slong *term_rows, slong *term_cols,
+    const fq_mvpoly_t *dixon_poly,
+    const slong *d0, const slong *d1, slong nvars)
+{
+    slong x_capacity = 0, dual_capacity = 0;
+    *x_monoms_out = NULL;
+    *dual_monoms_out = NULL;
+    *nx_monoms_out = *ndual_monoms_out = 0;
+    *x_hash_size = *dual_hash_size = 16;
+    *x_index = flint_calloc(16, sizeof(hash_entry_t *));
+    *dual_index = flint_calloc(16, sizeof(hash_entry_t *));
+    for (slong t = 0; t < dixon_poly->nterms; t++) {
+        const slong *exp = dixon_poly->terms[t].var_exp;
+        term_rows[t] = term_cols[t] = -1;
+        if (!exp) continue;
         int valid = 1;
-        for (slong k = 0; k < nvars && valid; k++) {
-            if (var_exp[k] >= d0[k] || var_exp[nvars + k] >= d1[k]) {
+        for (slong k = 0; k < nvars; k++)
+            if (exp[k] >= d0[k] || exp[nvars + k] >= d1[k]) {
                 valid = 0;
+                break;
             }
-        }
         if (!valid) continue;
-        
-        /* 1. Process x-monomial (first nvars components) */
-        ulong x_hash = 0;
-        for (slong k = 0; k < nvars; k++) {
-            x_hash = x_hash * 31 + var_exp[k];
-        }
-        x_hash &= (hash_size - 1);
-        
-        hash_entry_t *entry = x_buckets[x_hash];
-        int found = 0;
-        while (entry && !found) {
-            if (memcmp(entry->exp, var_exp, nvars * sizeof(slong)) == 0) {
-                found = 1;
-            } else {
-                entry = entry->next;
-            }
-        }
-        
-        if (!found) {
-            /* Map the .exp pointer to the correct offset in the storage block */
-            slong *x_exp = &x_exp_storage[nx_monoms * nvars];
-            memcpy(x_exp, var_exp, nvars * sizeof(slong));
-            
-            x_monoms[nx_monoms].exp = x_exp;
-            x_monoms[nx_monoms].idx = nx_monoms;
-            
-            /* Add to hash table for future lookup */
-            hash_entry_t *new_entry = (hash_entry_t*) flint_malloc(sizeof(hash_entry_t));
-            new_entry->exp = x_exp;
-            new_entry->idx = nx_monoms;
-            new_entry->next = x_buckets[x_hash];
-            x_buckets[x_hash] = new_entry;
-            
-            nx_monoms++;
-        }
-        
-        /* 2. Process dual monomial (next nvars components) */
-        const slong *dual_exp_src = &var_exp[nvars];
-        ulong dual_hash = 0;
-        for (slong k = 0; k < nvars; k++) {
-            dual_hash = dual_hash * 31 + dual_exp_src[k];
-        }
-        dual_hash &= (hash_size - 1);
-        
-        entry = dual_buckets[dual_hash];
-        found = 0;
-        while (entry && !found) {
-            if (memcmp(entry->exp, dual_exp_src, nvars * sizeof(slong)) == 0) {
-                found = 1;
-            } else {
-                entry = entry->next;
-            }
-        }
-        
-        if (!found) {
-            slong *dual_exp = &dual_exp_storage[ndual_monoms * nvars];
-            memcpy(dual_exp, dual_exp_src, nvars * sizeof(slong));
-            
-            dual_monoms[ndual_monoms].exp = dual_exp;
-            dual_monoms[ndual_monoms].idx = ndual_monoms;
-            
-            hash_entry_t *new_entry = (hash_entry_t*) flint_malloc(sizeof(hash_entry_t));
-            new_entry->exp = dual_exp;
-            new_entry->idx = ndual_monoms;
-            new_entry->next = dual_buckets[dual_hash];
-            dual_buckets[dual_hash] = new_entry;
-            
-            ndual_monoms++;
-        }
+        term_rows[t] = dixon_intern_monom(x_monoms_out, nx_monoms_out,
+                            &x_capacity, x_index, x_hash_size, exp, nvars);
+        term_cols[t] = dixon_intern_monom(dual_monoms_out, ndual_monoms_out,
+                            &dual_capacity, dual_index, dual_hash_size, exp + nvars, nvars);
     }
-    
-    /* Clean up hash table metadata (actual monom data is in combined blocks) */
-    for (slong i = 0; i < hash_size; i++) {
-        hash_entry_t *curr;
-        curr = x_buckets[i];
-        while (curr) {
-            hash_entry_t *next = curr->next;
-            flint_free(curr);
-            curr = next;
-        }
-        curr = dual_buckets[i];
-        while (curr) {
-            hash_entry_t *next = curr->next;
-            flint_free(curr);
-            curr = next;
-        }
-    }
-    flint_free(x_buckets);
-    flint_free(dual_buckets);
-    
-    /* Handle empty results */
-    if (nx_monoms == 0) {
-        flint_free(x_combined);
-        x_monoms = NULL;
-    }
-    if (ndual_monoms == 0) {
-        flint_free(dual_combined);
-        dual_monoms = NULL;
-    }
-    
-    /* Final output assignment */
-    *x_monoms_out = x_monoms;
-    *nx_monoms_out = nx_monoms;
-    *dual_monoms_out = dual_monoms;
-    *ndual_monoms_out = ndual_monoms;
-    
+    dixon_pack_monoms(x_monoms_out, *nx_monoms_out, nvars, *x_index, *x_hash_size);
+    dixon_pack_monoms(dual_monoms_out, *ndual_monoms_out, nvars, *dual_index, *dual_hash_size);
 }
 
 // Allocate single element on demand
@@ -3962,110 +3875,59 @@ fq_mvpoly_t* get_matrix_entry_lazy(fq_mvpoly_t ***matrix, slong i, slong j,
     return matrix[i][j];
 }
 static void fill_coefficient_matrix_optimized(fq_mvpoly_t ***full_matrix,
-                                      monom_t *x_monoms, slong nx_monoms,
-                                      monom_t *dual_monoms, slong ndual_monoms,
-                                      const fq_mvpoly_t *dixon_poly,
-                                      const slong *d0, const slong *d1, 
-                                      slong nvars, slong npars,
-                                      hash_entry_t **x_index, slong x_hash_size,
-                                      hash_entry_t **dual_index, slong dual_hash_size) {
-    slong *term_rows;
-    slong *term_cols;
-    slong *row_term_counts;
-    slong *row_offsets;
-    slong *row_write_offsets;
-    slong *row_term_indices;
-
-    (void) x_monoms;
-    (void) nx_monoms;
-    (void) dual_monoms;
-    (void) ndual_monoms;
-
-    if (dixon_poly->nterms <= 0) {
-        return;
-    }
-
-    term_rows = (slong *) flint_malloc((size_t) dixon_poly->nterms * sizeof(slong));
-    term_cols = (slong *) flint_malloc((size_t) dixon_poly->nterms * sizeof(slong));
-    row_term_counts = (slong *) flint_calloc((size_t) FLINT_MAX(1, nx_monoms), sizeof(slong));
-    row_offsets = (slong *) flint_malloc((size_t) (FLINT_MAX(1, nx_monoms) + 1) * sizeof(slong));
-    row_write_offsets = (slong *) flint_calloc((size_t) FLINT_MAX(1, nx_monoms), sizeof(slong));
-
-    for (slong t = 0; t < dixon_poly->nterms; t++) {
-        const slong *var_exp = dixon_poly->terms[t].var_exp;
-        slong row = -1;
-        slong col = -1;
-
-        term_rows[t] = -1;
-        term_cols[t] = -1;
-
-        if (!var_exp) {
-            continue;
-        }
-
-        int valid = 1;
-        for (slong k = 0; k < nvars; k++) {
-            if (var_exp[k] >= d0[k] || var_exp[nvars + k] >= d1[k]) {
-                valid = 0;
-                break;
-            }
-        }
-        if (!valid) {
-            continue;
-        }
-
-        row = lookup_monom_index(x_index, x_hash_size, var_exp, nvars);
-        col = lookup_monom_index(dual_index, dual_hash_size, var_exp + nvars, nvars);
-        if (row < 0 || col < 0) {
-            continue;
-        }
-
-        term_rows[t] = row;
-        term_cols[t] = col;
-        row_term_counts[row]++;
-    }
-
-    row_offsets[0] = 0;
-    for (slong row = 0; row < nx_monoms; row++) {
-        row_offsets[row + 1] = row_offsets[row] + row_term_counts[row];
-    }
-
-    row_term_indices = (slong *) flint_malloc((size_t) row_offsets[nx_monoms] * sizeof(slong));
-    for (slong t = 0; t < dixon_poly->nterms; t++) {
-        slong row = term_rows[t];
-        if (row >= 0) {
-            slong offset = row_offsets[row] + row_write_offsets[row];
-            row_term_indices[offset] = t;
-            row_write_offsets[row]++;
-        }
-    }
+                                      slong nx_monoms, slong ndual_monoms,
+                                      const fq_mvpoly_t *dixon_poly, slong npars,
+                                      const slong *term_rows, const slong *term_cols)
+{
+    if (dixon_poly->nterms <= 0) return;
+    slong *row_offsets = flint_calloc((size_t) nx_monoms + 1, sizeof(slong));
+    slong *row_write_offsets = flint_malloc((size_t) nx_monoms * sizeof(slong));
+    for (slong t = 0; t < dixon_poly->nterms; t++)
+        if (term_rows[t] >= 0) row_offsets[term_rows[t] + 1]++;
+    for (slong row = 0; row < nx_monoms; row++)
+        row_offsets[row + 1] += row_offsets[row];
+    memcpy(row_write_offsets, row_offsets, (size_t) nx_monoms * sizeof(slong));
+    slong *row_term_indices = flint_malloc((size_t) row_offsets[nx_monoms] * sizeof(slong));
+    for (slong t = 0; t < dixon_poly->nterms; t++)
+        if (term_rows[t] >= 0) row_term_indices[row_write_offsets[term_rows[t]]++] = t;
 
 #ifdef _OPENMP
-    #pragma omp parallel for schedule(dynamic, 1) if(nx_monoms > 1)
+    #pragma omp parallel if(nx_monoms > 1)
 #endif
-    for (slong row = 0; row < nx_monoms; row++) {
-        for (slong idx = row_offsets[row]; idx < row_offsets[row + 1]; idx++) {
-            slong term_idx = row_term_indices[idx];
-            slong col = term_cols[term_idx];
-            fq_mvpoly_t *entry;
-
-            if (col < 0) {
-                continue;
+    {
+        slong *entry_counts = flint_calloc((size_t) ndual_monoms, sizeof(slong));
+#ifdef _OPENMP
+        #pragma omp for schedule(dynamic, 1)
+#endif
+        for (slong row = 0; row < nx_monoms; row++) {
+            for (slong idx = row_offsets[row]; idx < row_offsets[row + 1]; idx++)
+                entry_counts[term_cols[row_term_indices[idx]]]++;
+            for (slong col = 0; col < ndual_monoms; col++) {
+                slong count = entry_counts[col];
+                if (!count) continue;
+                fq_mvpoly_t *entry = flint_malloc(sizeof(*entry));
+                entry->nvars = 0;
+                entry->npars = npars;
+                entry->nterms = 0;
+                entry->alloc = count;
+                entry->ctx = dixon_poly->ctx;
+                /* add_term_fast initializes every occupied slot. */
+                entry->terms = flint_malloc((size_t) count * sizeof(*entry->terms));
+                full_matrix[row][col] = entry;
+                entry_counts[col] = 0;
             }
-
-            entry = get_matrix_entry_lazy(full_matrix, row, col, npars, dixon_poly->ctx);
-            fq_mvpoly_add_term_fast(entry, NULL,
-                                    dixon_poly->terms[term_idx].par_exp,
-                                    dixon_poly->terms[term_idx].coeff);
+            for (slong idx = row_offsets[row]; idx < row_offsets[row + 1]; idx++) {
+                slong t = row_term_indices[idx];
+                fq_mvpoly_add_term_fast(full_matrix[row][term_cols[t]], NULL,
+                                        dixon_poly->terms[t].par_exp,
+                                        dixon_poly->terms[t].coeff);
+            }
         }
+        flint_free(entry_counts);
     }
-
     flint_free(row_term_indices);
     flint_free(row_write_offsets);
     flint_free(row_offsets);
-    flint_free(row_term_counts);
-    flint_free(term_cols);
-    flint_free(term_rows);
 }
 // Optimized version of find_fq_optimal_maximal_rank_submatrix
 // ============ Extract coefficient matrix ============
@@ -4203,17 +4065,20 @@ void extract_fq_coefficient_matrix_from_dixon(fq_mvpoly_t ***coeff_matrix,
     slong dual_hash_size = 0;
     dixon_debug_log("  Collecting monomial supports...\n");
     
+    slong *term_rows = flint_malloc((size_t) dixon_poly->nterms * sizeof(slong));
+    slong *term_cols = flint_malloc((size_t) dixon_poly->nterms * sizeof(slong));
     collect_unique_monomials(&x_monoms, &nx_monoms,
                         &dual_monoms, &ndual_monoms,
-                        dixon_poly, d0, d1, nvars);
+                        &x_index, &x_hash_size, &dual_index, &dual_hash_size,
+                        term_rows, term_cols, dixon_poly, d0, d1, nvars);
     dixon_debug_log("  Collected %ld row monomials and %ld dual monomials in %.3f seconds\n",
                     nx_monoms, ndual_monoms, get_wall_time() - phase_start);
-    x_index = build_monom_index(x_monoms, nx_monoms, nvars, &x_hash_size);
-    dual_index = build_monom_index(dual_monoms, ndual_monoms, nvars, &dual_hash_size);
 
     dixon_info_log("  Dixon matrix size: %ld x %ld\n", nx_monoms, ndual_monoms);
     
     if (nx_monoms == 0 || ndual_monoms == 0) {
+        flint_free(term_rows);
+        flint_free(term_cols);
         dixon_info_log("Warning: Empty coefficient matrix\n");
         *matrix_size = 0;
         dixon_maybe_print_step_time("Step 2", get_wall_time() - step2_wall_start);
@@ -4239,11 +4104,10 @@ void extract_fq_coefficient_matrix_from_dixon(fq_mvpoly_t ***coeff_matrix,
 
     phase_start = get_wall_time();
     dixon_debug_log("  Filling Dixon coefficient matrix...\n");
-    fill_coefficient_matrix_optimized(full_matrix, x_monoms, nx_monoms,
-                                     dual_monoms, ndual_monoms, dixon_poly,
-                                     d0, d1, nvars, npars,
-                                     x_index, x_hash_size,
-                                     dual_index, dual_hash_size);
+    fill_coefficient_matrix_optimized(full_matrix, nx_monoms, ndual_monoms,
+                                     dixon_poly, npars, term_rows, term_cols);
+    flint_free(term_rows);
+    flint_free(term_cols);
     dixon_debug_log("  Coefficient matrix filled in %.3f seconds\n",
                     get_wall_time() - phase_start);
     slong preselection_x_power = extract_fq_full_matrix_x_content(full_matrix,
@@ -5048,9 +4912,18 @@ slong dixon_matrix_size(slong nvars, slong degree, ulong prime, slong field_degr
     monom_t *dual_monoms = NULL;
     slong nx_monoms = 0, ndual_monoms = 0;
     
+    hash_entry_t **x_index, **dual_index;
+    slong x_hash_size, dual_hash_size;
+    slong *term_rows = flint_malloc((size_t) d_poly.nterms * sizeof(slong));
+    slong *term_cols = flint_malloc((size_t) d_poly.nterms * sizeof(slong));
     collect_unique_monomials(&x_monoms, &nx_monoms,
                             &dual_monoms, &ndual_monoms,
-                            &d_poly, d0, d1, nvars);
+                            &x_index, &x_hash_size, &dual_index, &dual_hash_size,
+                            term_rows, term_cols, &d_poly, d0, d1, nvars);
+    flint_free(term_rows);
+    flint_free(term_cols);
+    free_monom_index(x_index, x_hash_size);
+    free_monom_index(dual_index, dual_hash_size);
     
     // The actual matrix size (should be square, so take minimum)
     slong matrix_size = FLINT_MAX(nx_monoms, ndual_monoms);
