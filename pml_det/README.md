@@ -56,6 +56,10 @@ this subset.
 
 ## drsolve-specific modifications
 
+The internal full left-nullspace helper is named
+`pml_nmod_mat_left_nullspace` to avoid colliding with FLINT when linking static
+libraries. The compact helper used by the determinant routines is unchanged.
+
 The most important local work is in:
 
 - `pml_det/src/nmod_poly_mat_extra/nmod_poly_mat_det.c`

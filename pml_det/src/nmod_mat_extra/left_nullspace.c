@@ -15,7 +15,7 @@
 
 #include "nmod_mat_extra.h"
 
-slong nmod_mat_left_nullspace(nmod_mat_t X, const nmod_mat_t A)
+slong pml_nmod_mat_left_nullspace(nmod_mat_t X, const nmod_mat_t A)
 {
     // helper lists of nonpivot|pivot columns of X
     slong * permutation = flint_malloc(A->r * sizeof(slong));

@@ -505,7 +505,7 @@ void nmod_mat_permute_columns(nmod_mat_t mat, const slong * perm_act, slong * pe
  *
  * @see nmod_mat_left_nullspace_compact
  */
-slong nmod_mat_left_nullspace(nmod_mat_t X, const nmod_mat_t A);
+slong pml_nmod_mat_left_nullspace(nmod_mat_t X, const nmod_mat_t A);
 
 /** Left nullspace of A in compact form.
  *
