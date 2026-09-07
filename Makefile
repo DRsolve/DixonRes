@@ -150,7 +150,8 @@ MATH_SOURCES = $(SRC_DIR)/dixon/dixon_complexity.c \
                $(SRC_DIR)/dixon/dixon_recursive.c \
                $(SRC_DIR)/dixon/dixon_flint.c \
                $(SRC_DIR)/dixon/dixon_interface_flint.c \
-               $(SRC_DIR)/dixon/dixon_test.c \
+               $(SRC_DIR)/test/dixon_test.c \
+               $(SRC_DIR)/test/polynomial_system_solver_test.c \
                $(SRC_DIR)/dixon/dixon_with_ideal_reduction.c \
                $(SRC_DIR)/determinant/fq_mat_det.c \
                $(SRC_DIR)/determinant/fq_mpoly_mat_det.c \
@@ -405,9 +406,36 @@ uninstall:
 	@echo ""
 	@echo "=== Uninstall complete ==="
 
+COMPONENT_TEST_SOURCES = $(SRC_DIR)/test/component_tests.c \
+                         $(SRC_DIR)/test/unified_mpoly_det_test.c \
+                         $(SRC_DIR)/test/fq_nmod_roots_test.c \
+                         $(SRC_DIR)/test/rational_system_solver_test.c \
+                         $(SRC_DIR)/test/dixon_complexity_test.c \
+                         $(SRC_DIR)/test/dixon_ideal_test.c \
+                         $(SRC_DIR)/test/resultant_ideal_test.c \
+                         $(SRC_DIR)/test/fq_sparse_interpolation_test.c
+
+.PHONY: test-components
+test-components: $(BUILD_DIR)/component_tests
+	OMP_NUM_THREADS=4 ./$(BUILD_DIR)/component_tests determinant
+	./$(BUILD_DIR)/component_tests roots
+	./$(BUILD_DIR)/component_tests complexity
+
+$(BUILD_DIR)/component_tests: $(COMPONENT_TEST_SOURCES) $(SRC_DIR)/test/component_tests.h $(DIXON_SHARED_LIB)
+	$(CC) $(ALL_CFLAGS) -o $@ $(COMPONENT_TEST_SOURCES) -L. -ldrsolve $(FLINT_LIBS) $(SYSTEM_LIBS) $(LDFLAGS) $(RPATH_FLAGS)
+
+.PHONY: test-minor-dp
+test-minor-dp: $(BUILD_DIR)/det_minor_dp_test
+	./$(BUILD_DIR)/det_minor_dp_test
+
+$(BUILD_DIR)/det_minor_dp_test: src/test/det_minor_dp.c $(DIXON_SHARED_LIB)
+	$(CC) $(ALL_CFLAGS) -o $@ $< -L. -ldrsolve $(FLINT_LIBS) $(SYSTEM_LIBS) $(LDFLAGS) $(RPATH_FLAGS)
+
 # ============================================================
 # Object file compilation (src/**/*.c -> build/**/*.o)
 # ============================================================
+$(BUILD_DIR)/determinant/unified_mpoly_det.o $(BUILD_DIR)/determinant/fq_mpoly_mat_det.o: $(SRC_DIR)/determinant/det_minor_dp.h
+
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c | $(BUILD_DIR) $(PML_BUILD_PREREQS)
 	@echo "Compiling $<..."
 	@mkdir -p $(dir $@)

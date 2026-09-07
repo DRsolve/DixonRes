@@ -67,7 +67,7 @@ static void print_short_usage(const char *prog_name)
     printf("OTHER OPTIONS:\n");
     printf("  --method <n>      Determinant method selection (0:Expansion, 1:HNF, 2:Interpolation, 3:Sparse, 4:Bareiss, 5:Fdixon)\n");
     printf("  --step1, --step4  Override method <n> for specific algorithm steps\n");
-    printf("  --cache <num>     Determinant memoization cache entry limit (default: 1024)\n");
+    printf("  --cache <num>     Minor DP live-entry limit (default: 1024; 0: plain expansion)\n");
     printf("  --threads <num>   Set number of threads for parallel computation\n");
     printf("  --dixon           Use Dixon resultant (default)\n");
     printf("  --macaulay        Use Macaulay resultant\n");
@@ -271,7 +271,7 @@ void drsolve_cli_print_usage(const char *prog_name)
     printf("    -> Available methods: 0.Minor expansion; 1.HNF; 2.Interpolation; 3.Sparse interpolation; 4.Bareiss; 5.Recursive Dixon construction; 6.Balanced split Laplace (experimental)\n");
     printf("    -> --method sets both step 1 and step 4 for backward compatibility\n");
     printf("    -> --fq-det-method (auto|hnf|iter) controls the prime-field univariate polynomial-matrix determinant backend used in fq_poly_mat_det\n");
-    printf("    -> --cache sets the determinant memoization cache entry cap (method 0 / unified expansion path)\n");
+    printf("    -> --cache limits live minor DP entries (method 0); smaller subproblems are used when full layers do not fit; 0 disables DP\n");
     printf("    -> --array-limit-k <k> caps optimized extension-field array multiplication tables at 2^k entries (0-62)\n");
     printf("    -> --fast-ksy enables a KSY precondition check for method 5 submatrix extraction; --no-fast-ksy disables it\n");
     printf("    -> --fast-ksy-col <idx> selects which fast-Dixon column is treated as the constant column for the KSY check (default: 0)\n");

@@ -75,6 +75,9 @@ void ComputePolyMatrixDet(nmod_mpoly_t det_poly,
                          mp_limb_t p,
                          const nmod_mpoly_ctx_t mctx);
 
+/* Release the calling thread's sparse interpolation random state. */
+void fq_sparse_interpolation_cleanup(void);
+
 void myrandpoly(nmod_mpoly_t f, slong n, slong T, slong D,
                 nmod_t mod, const nmod_mpoly_ctx_t mctx);
 

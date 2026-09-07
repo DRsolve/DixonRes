@@ -602,7 +602,8 @@ set(MATH_SOURCES
   src/dixon/dixon_recursive.c
   src/dixon/dixon_flint.c
   src/dixon/dixon_interface_flint.c
-  src/dixon/dixon_test.c
+  src/test/dixon_test.c
+  src/test/polynomial_system_solver_test.c
   src/dixon/dixon_with_ideal_reduction.c
   src/determinant/fq_mat_det.c
   src/determinant/fq_mpoly_mat_det.c
@@ -884,6 +885,44 @@ endif()
 # CTest
 # ============================================================
 enable_testing()
+
+if(BUILD_TESTING)
+  add_executable(det_minor_dp_test src/test/det_minor_dp.c)
+  drsolve_target_common(det_minor_dp_test)
+  if(TARGET drsolve_static)
+    target_link_libraries(det_minor_dp_test PRIVATE drsolve_static)
+  elseif(TARGET drsolve_shared)
+    target_link_libraries(det_minor_dp_test PRIVATE drsolve_shared)
+  else()
+    target_sources(det_minor_dp_test PRIVATE ${MATH_SOURCES})
+  endif()
+  add_test(NAME drsolve_minor_dp COMMAND det_minor_dp_test)
+
+  add_executable(component_tests
+    src/test/component_tests.c
+    src/test/unified_mpoly_det_test.c
+    src/test/fq_nmod_roots_test.c
+    src/test/rational_system_solver_test.c
+    src/test/dixon_complexity_test.c
+    src/test/dixon_ideal_test.c
+    src/test/resultant_ideal_test.c
+    src/test/fq_sparse_interpolation_test.c
+  )
+  drsolve_target_common(component_tests)
+  if(TARGET drsolve_static)
+    target_link_libraries(component_tests PRIVATE drsolve_static)
+  elseif(TARGET drsolve_shared)
+    target_link_libraries(component_tests PRIVATE drsolve_shared)
+  else()
+    target_sources(component_tests PRIVATE ${MATH_SOURCES})
+  endif()
+  foreach(_component determinant roots complexity)
+    add_test(NAME drsolve_component_${_component} COMMAND component_tests ${_component})
+    set_tests_properties(drsolve_component_${_component} PROPERTIES
+      ENVIRONMENT "OMP_NUM_THREADS=4"
+      FAIL_REGULAR_EXPRESSION "ERROR:;Error:;do not match")
+  endforeach()
+endif()
 
 # Helper to register a test and route output files to a tmp dir
 set(_test_wd "${CMAKE_BINARY_DIR}")
