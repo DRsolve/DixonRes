@@ -1,6 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "fq_nmod_roots.h"
-#include "component_tests.h"
 
 // Benchmark functions
 

@@ -887,14 +887,21 @@ endif()
 enable_testing()
 
 if(BUILD_TESTING)
-  add_executable(det_minor_dp_test src/test/det_minor_dp.c)
+  # Observe actual backend scheduling; normal libraries omit the callbacks.
+  set(DET_MINOR_TEST_BACKENDS
+    src/determinant/unified_mpoly_det.c
+    src/determinant/fq_mpoly_mat_det.c)
+  add_executable(det_minor_dp_test src/test/det_minor_dp.c ${DET_MINOR_TEST_BACKENDS})
+  target_compile_definitions(det_minor_dp_test PRIVATE DRSOLVE_DET_TESTING)
   drsolve_target_common(det_minor_dp_test)
   if(TARGET drsolve_static)
     target_link_libraries(det_minor_dp_test PRIVATE drsolve_static)
   elseif(TARGET drsolve_shared)
     target_link_libraries(det_minor_dp_test PRIVATE drsolve_shared)
   else()
-    target_sources(det_minor_dp_test PRIVATE ${MATH_SOURCES})
+    set(_minor_test_math_sources ${MATH_SOURCES})
+    list(REMOVE_ITEM _minor_test_math_sources ${DET_MINOR_TEST_BACKENDS})
+    target_sources(det_minor_dp_test PRIVATE ${_minor_test_math_sources})
   endif()
   add_test(NAME drsolve_minor_dp COMMAND det_minor_dp_test)
 

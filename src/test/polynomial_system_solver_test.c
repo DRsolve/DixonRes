@@ -1,6 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "polynomial_system_solver.h"
-#include "component_tests.h"
 
 void test_polynomial_solver(void) {
     printf("\n=== Testing Enhanced Polynomial System Solver ===\n");

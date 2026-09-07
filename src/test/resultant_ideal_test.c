@@ -1,6 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "resultant_with_ideal_reduction.h"
-#include "component_tests.h"
 
 void test_iterative_elimination_str2(void) {
     printf("\n================================================\n");

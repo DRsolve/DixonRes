@@ -1,6 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "unified_mpoly_det.h"
-#include "component_tests.h"
 
 void test_unified_mpoly_det(void) {
     printf("\n=== Testing Unified Polynomial Matrix Determinant ===\n");

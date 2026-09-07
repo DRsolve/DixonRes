@@ -20,6 +20,8 @@ ctest --test-dir <build-dir> -R 'drsolve_(minor_dp|component_)' --output-on-fail
 ```
 
 `det_minor_dp.c` contains automated determinant and scheduling regressions.
+Its executable compiles both determinant backends with test-only observations
+to check their actual parallel scheduling and bounded-memory fallback.
 The `*_test.c` files extracted from implementation modules retain their
 original diagnostic output; many are examples or benchmarks rather than
 assertion-based tests. The component runner exposes them individually.

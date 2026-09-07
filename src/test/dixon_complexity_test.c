@@ -1,6 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "dixon_complexity.h"
-#include "component_tests.h"
 
 int test_dixon_complexity(void) {
     // Test data

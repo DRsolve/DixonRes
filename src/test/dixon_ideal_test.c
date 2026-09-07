@@ -1,6 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "dixon_with_ideal_reduction.h"
-#include "component_tests.h"
 
 void test_iterative_elimination(void) {
     printf("\n================================================\n");

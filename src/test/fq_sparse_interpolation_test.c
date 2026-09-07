@@ -1,6 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "fq_sparse_interpolation.h"
-#include "component_tests.h"
 
 static void test_random_polynomial(void)
 {

@@ -1456,22 +1456,254 @@ void compute_nmod_mpoly_det_parallel_optimized(nmod_mpoly_t det_result,
     flint_free(partial_results);
 }
 
-#define DET_DP_MINOR compute_nmod_mpoly_det_minor
-#define DET_DP_BASE compute_nmod_mpoly_det_recursive
-#define DET_DP_NAME compute_nmod_mpoly_det_layered_dp
-#define DET_DP_POLY nmod_mpoly_t
-#define DET_DP_CTX nmod_mpoly_ctx_t
-#define DET_DP_LABEL "nmod"
-#define DET_DP_INIT(p, c) (nmod_mpoly_init(p, c), 1)
-#define DET_DP_CLEAR(p, c) nmod_mpoly_clear(p, c)
-#define DET_DP_SET(p, q, c) nmod_mpoly_set(p, q, c)
-#define DET_DP_ZERO(p, c) nmod_mpoly_zero(p, c)
-#define DET_DP_IS_ZERO(p, c) nmod_mpoly_is_zero(p, c)
-#define DET_DP_MUL(p, a, b, c) nmod_mpoly_mul(p, a, b, c)
-#define DET_DP_ADD(p, a, b, c) nmod_mpoly_add(p, a, b, c)
-#define DET_DP_SUB(p, a, b, c) nmod_mpoly_sub(p, a, b, c)
-#define DET_DP_SWAP(p, q, c) nmod_mpoly_swap(p, q, c)
-#include "det_minor_dp.h"
+/* Layered minor DP, using colex column-subset ranks and adjacent layers.
+ * The final expansion is parallelized by cofactor, followed by a tree sum.
+ * The entry limit excludes arithmetic temporaries and matrix views.
+ */
+#ifdef DRSOLVE_DET_TESTING
+/* Test-only observation; normal builds contain no callbacks. */
+void drsolve_det_test_event(int event, slong size);
+#endif
+static int compute_nmod_mpoly_det_layered_dp(nmod_mpoly_t result, nmod_mpoly_t **matrix,
+                       slong size, nmod_mpoly_ctx_t ctx, int use_parallel, slong limit)
+{
+    ulong choose[FLINT_BITS][FLINT_BITS] = {{0}};
+    nmod_mpoly_t *previous = NULL, *current = NULL;
+    slong previous_count = 0, current_count = 0;
+    slong peak = 0;
+    int ok = 0;
+
+    if (size <= 3 || size >= FLINT_BITS || limit <= 0) return 0;
+
+    /* Saturation avoids overflow even when the requested matrix is far too
+     * large. All ranks used after this preflight fit within the entry limit. */
+    for (slong n = 0; n <= size; n++) {
+        choose[n][0] = 1;
+        for (slong k = 1; k <= n; k++) {
+            ulong a = choose[n - 1][k - 1], b = choose[n - 1][k];
+            choose[n][k] = (a > (ulong) limit || b > (ulong) limit - a)
+                            ? (ulong) limit + 1 : a + b;
+        }
+    }
+    for (slong k = 1; k <= size; k++) {
+        ulong count = k == size ? (ulong) size : choose[size][k];
+        ulong prev = k == 1 ? 0 : choose[size][k - 1];
+        if (count > (ulong) limit || prev > (ulong) limit - count)
+            return 0;
+        if (count > (size_t) -1 / sizeof(nmod_mpoly_t)) return 0;
+        if ((slong) (count + prev) > peak) peak = (slong) (count + prev);
+    }
+
+    /* Keep cheap sparse expansions on the demand-driven path. The product
+     * of row nonzero counts bounds the number of recursive branches; stop
+     * counting once it already exceeds the full DP multiplication count. */
+    {
+        double dp_work = 0, recursive_work = 0, branches = 1;
+        for (slong k = 2; k <= size; k++) dp_work += k * (double) choose[size][k];
+        for (slong row = 0; row < size - 3; row++) {
+            slong nonzero = 0;
+            for (slong col = 0; col < size; col++)
+                if (!nmod_mpoly_is_zero(matrix[row][col], ctx)) nonzero++;
+            branches *= FLINT_MIN(nonzero, size - row);
+            recursive_work += branches;
+            if (recursive_work >= dp_work) break;
+        }
+        if (recursive_work + 12 * branches < dp_work) return 0;
+    }
+
+    if (g_dixon_verbose_level >= 2)
+        printf("  determinant layered DP (%s): size=%ld, peak entries=%ld, limit=%ld, parallel=%s\n",
+               "nmod", size, peak, limit, use_parallel ? "yes" : "no");
+
+#ifdef DRSOLVE_DET_TESTING
+    drsolve_det_test_event(0, size);
+#endif
+
+    for (slong k = 1; k <= size; k++) {
+        slong count = k == size ? size : (slong) choose[size][k];
+        int failed = 0;
+        current = malloc((size_t) count * sizeof(nmod_mpoly_t));
+        if (current == NULL) goto cleanup;
+        for (current_count = 0; current_count < count; current_count++) {
+            if (!(nmod_mpoly_init(current[current_count], ctx), 1)) goto cleanup;
+        }
+
+        if (k == 1) {
+            for (slong i = 0; i < count; i++)
+                nmod_mpoly_set(current[i], matrix[size - 1][i], ctx);
+        } else {
+            /* One writer per output, immutable previous layer, implicit
+             * barrier before freeing it. No hash locks or duplicate work. */
+#ifdef _OPENMP
+            #pragma omp parallel if(use_parallel && count > 1 && !omp_in_parallel()) num_threads(FLINT_MIN(count, omp_get_max_threads())) reduction(|:failed)
+#endif
+            {
+                nmod_mpoly_t product, sum;
+                int product_ok = (nmod_mpoly_init(product, ctx), 1);
+                int sum_ok = (nmod_mpoly_init(sum, ctx), 1);
+                if (!product_ok || !sum_ok) failed = 1;
+#ifdef _OPENMP
+                #pragma omp for schedule(dynamic, 1)
+#endif
+                for (slong index = 0; index < count; index++) {
+                    slong cols[FLINT_BITS];
+                    ulong prefix[FLINT_BITS], suffix[FLINT_BITS];
+                    ulong rank = (ulong) index;
+                    slong col = size - 1;
+                    if (!product_ok || !sum_ok) continue;
+
+                    /* There is only one root state. Parallelize its expansion
+                     * terms instead of serializing all n large products in
+                     * one worker. The colex rank of the (n-1)-subset missing
+                     * column index is n-1-index. For n>=4, these n outputs and
+                     * n inputs fit below the middle-layer entry peak. */
+                    if (k == size) {
+                        if (nmod_mpoly_is_zero(matrix[0][index], ctx) ||
+                            nmod_mpoly_is_zero(previous[size - 1 - index], ctx)) continue;
+#ifdef DRSOLVE_DET_TESTING
+                        drsolve_det_test_event(1, size);
+#endif
+                        nmod_mpoly_mul(current[index], matrix[0][index], previous[size - 1 - index], ctx);
+                        if (index & 1) {
+                            nmod_mpoly_zero(product, ctx);
+                            nmod_mpoly_sub(current[index], product, current[index], ctx);
+                        }
+                        continue;
+                    }
+
+                    /* Unrank sum_i C(cols[i], i+1) in O(n) time. */
+                    for (slong j = k; j > 0; j--) {
+                        while (choose[col][j] > rank) col--;
+                        cols[j - 1] = col;
+                        rank -= choose[col][j];
+                        col--;
+                    }
+                    prefix[0] = 0;
+                    for (slong j = 0; j < k; j++)
+                        prefix[j + 1] = prefix[j] + choose[cols[j]][j + 1];
+                    suffix[k] = 0;
+                    for (slong j = k - 1; j > 0; j--)
+                        suffix[j] = suffix[j + 1] + choose[cols[j]][j];
+
+                    nmod_mpoly_zero(current[index], ctx);
+                    for (slong j = 0; j < k; j++) {
+                        ulong child = prefix[j] + suffix[j + 1];
+                        if (nmod_mpoly_is_zero(matrix[size - k][cols[j]], ctx) ||
+                            nmod_mpoly_is_zero(previous[child], ctx)) continue;
+                        nmod_mpoly_mul(product, matrix[size - k][cols[j]], previous[child], ctx);
+                        if (j & 1)
+                            nmod_mpoly_sub(sum, current[index], product, ctx);
+                        else
+                            nmod_mpoly_add(sum, current[index], product, ctx);
+                        nmod_mpoly_swap(current[index], sum, ctx);
+                    }
+                }
+                /* The worksharing barrier above publishes all root terms.
+                 * A balanced reduction keeps large sums parallel and avoids
+                 * repeatedly merging one term into an ever-growing prefix. */
+                if (k == size) {
+                    for (slong stride = 1; stride < count; stride *= 2) {
+#ifdef _OPENMP
+                        #pragma omp for schedule(static)
+#endif
+                        for (slong left = 0; left < count; left += 2 * stride) {
+                            if (!product_ok || !sum_ok || left + stride >= count) continue;
+                            nmod_mpoly_add(sum, current[left], current[left + stride], ctx);
+                            nmod_mpoly_swap(current[left], sum, ctx);
+                        }
+                    }
+                }
+                if (product_ok) nmod_mpoly_clear(product, ctx);
+                if (sum_ok) nmod_mpoly_clear(sum, ctx);
+            }
+        }
+        if (failed) goto cleanup;
+        for (slong i = 0; i < previous_count; i++) nmod_mpoly_clear(previous[i], ctx);
+        free(previous);
+        previous = current;
+        previous_count = current_count;
+        current = NULL;
+        current_count = 0;
+    }
+    nmod_mpoly_swap(result, previous[0], ctx);
+    ok = 1;
+
+cleanup:
+    for (slong i = 0; i < current_count; i++) nmod_mpoly_clear(current[i], ctx);
+    for (slong i = 0; i < previous_count; i++) nmod_mpoly_clear(previous[i], ctx);
+    free(current);
+    free(previous);
+    return ok;
+}
+
+/* Method 0 backend. If a complete layer does not fit, expand one row and
+ * retry DP on each child. Siblings execute sequentially, so their DP storage
+ * never multiplies the entry budget; each child may still use layer threads.
+ * The submatrix is a shallow, read-only view of the input polynomials. */
+static void compute_nmod_mpoly_det_minor(nmod_mpoly_t result, nmod_mpoly_t **matrix,
+                         slong size, nmod_mpoly_ctx_t ctx, int use_parallel, slong limit)
+{
+    nmod_mpoly_t **rows = NULL, *entries = NULL;
+    nmod_mpoly_t accum, child, product, sum;
+    int accum_ok, child_ok, product_ok, sum_ok;
+    size_t width;
+
+    if (size <= 3 || limit <= 0) {
+        compute_nmod_mpoly_det_recursive(result, matrix, size, ctx);
+        return;
+    }
+    if (compute_nmod_mpoly_det_layered_dp(result, matrix, size, ctx, use_parallel, limit)) return;
+
+    width = (size_t) (size - 1);
+    if (width > (size_t) -1 / sizeof(*rows) ||
+        width > (size_t) -1 / sizeof(*entries) / width) {
+        compute_nmod_mpoly_det_recursive(result, matrix, size, ctx);
+        return;
+    }
+    rows = malloc(width * sizeof(*rows));
+    entries = malloc(width * width * sizeof(*entries));
+    if (rows == NULL || entries == NULL) {
+        free(rows);
+        free(entries);
+        compute_nmod_mpoly_det_recursive(result, matrix, size, ctx);
+        return;
+    }
+    for (size_t i = 0; i < width; i++) rows[i] = entries + i * width;
+    accum_ok = (nmod_mpoly_init(accum, ctx), 1);
+    child_ok = (nmod_mpoly_init(child, ctx), 1);
+    product_ok = (nmod_mpoly_init(product, ctx), 1);
+    sum_ok = (nmod_mpoly_init(sum, ctx), 1);
+    if (accum_ok && child_ok && product_ok && sum_ok) {
+        nmod_mpoly_zero(accum, ctx);
+        for (slong col = 0; col < size; col++) {
+            if (nmod_mpoly_is_zero(matrix[0][col], ctx)) continue;
+            for (slong i = 1; i < size; i++) {
+                slong dst = 0;
+                for (slong j = 0; j < size; j++) {
+                    if (j == col) continue;
+                    memcpy(&rows[i - 1][dst++], &matrix[i][j], sizeof(*entries));
+                }
+            }
+            compute_nmod_mpoly_det_minor(child, rows, size - 1, ctx, use_parallel, limit);
+            if (nmod_mpoly_is_zero(child, ctx)) continue;
+            nmod_mpoly_mul(product, matrix[0][col], child, ctx);
+            if (col & 1)
+                nmod_mpoly_sub(sum, accum, product, ctx);
+            else
+                nmod_mpoly_add(sum, accum, product, ctx);
+            nmod_mpoly_swap(accum, sum, ctx);
+        }
+        nmod_mpoly_swap(result, accum, ctx);
+    } else {
+        compute_nmod_mpoly_det_recursive(result, matrix, size, ctx);
+    }
+    if (accum_ok) nmod_mpoly_clear(accum, ctx);
+    if (child_ok) nmod_mpoly_clear(child, ctx);
+    if (product_ok) nmod_mpoly_clear(product, ctx);
+    if (sum_ok) nmod_mpoly_clear(sum, ctx);
+    free(entries);
+    free(rows);
+}
 
 static void compute_fq_det_nmod_minor_direct(fq_mvpoly_t *result,
                                               fq_mvpoly_t **matrix,

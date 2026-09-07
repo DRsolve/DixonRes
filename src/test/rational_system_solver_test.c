@@ -1,6 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "rational_system_solver.h"
-#include "component_tests.h"
 
 void test_rational_polynomial_solver(void) {
     printf("\n=== Testing Rational Polynomial System Solver ===\n");
