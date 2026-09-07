@@ -21,11 +21,12 @@ Author: Haohai Suo (<haohai.suo@mail.sdu.edu.cn>)
   <https://github.com/flintlib/flint>
 
 ```bash
+sudo apt install libgmp-dev libmpfr-dev make autoconf libtool-bin
 git clone https://github.com/flintlib/flint.git && cd flint
 ./bootstrap.sh
 ./configure 
 make
-make install
+sudo make install
 ```
   
 - **PML** (built in)  
@@ -39,7 +40,7 @@ git clone https://github.com/drsolve/drsolve.git && cd drsolve
 ./configure
 make
 make check                         # optional
-make install                       # optional
+sudo make install                       # optional
 ```
 For more options, run `./configure --help` or `make help`.
 
